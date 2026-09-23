@@ -61,7 +61,7 @@ try {
     console.log('Thumbnail: out/thumbnail.jpg (1280x720)');
   } else if (has('--preview')) {
     const dir = path.join(OUT, 'preview'); mkdirSync(dir, {recursive: true});
-    for (const f of readdirSync(dir)) if (/^t\d+\.jpg$/.test(f)) rmSync(path.join(dir, f));
+    for (const f of readdirSync(dir)) if (/^still-\d+\.jpg$/.test(f)) rmSync(path.join(dir, f));
     const {browser, page, N, fps} = await openFilm();
     const ST = await page.evaluate(() => window.STUDY);
     const times = (val('--at') || '').split(',').filter(Boolean).map(Number);
@@ -70,9 +70,9 @@ try {
       for (const s of ST.surahs) times.push(s.t0 + .9, s.t0 + 30);                           // each surah header and an ayah in it
       times.push(ST.phases[0].t1 + 1.5, ST.phases[1].t1 + 10, ST.recitationEnd + 5, ST.total - 8);
     }
-    for (const t of times) { const i = Math.min(N - 1, Math.round(t * fps)); writeFileSync(path.join(dir, `t${String(Math.round(t * 10)).padStart(6, '0')}.jpg`), await jpeg(page, i)); }
+    for (const [k, t] of times.entries()) { const i = Math.min(N - 1, Math.round(t * fps)); writeFileSync(path.join(dir, `still-${String(k).padStart(3, '0')}.jpg`), await jpeg(page, i)); console.log(`  still-${String(k).padStart(3, '0')}.jpg  ${stamp(t)}`); }
     await browser.close();
-    await run(FFMPEG, ['-v', 'error', '-y', '-pattern_type', 'glob', '-i', path.join(dir, 't*.jpg'), '-vf', 'scale=480:-2,tile=4x' + Math.ceil(times.length / 4), '-frames:v', '1', path.join(dir, 'contact.jpg')]);
+    await run(FFMPEG, ['-v', 'error', '-y', '-i', path.join(dir, 'still-%03d.jpg'), '-vf', 'scale=480:-2,tile=4x' + Math.ceil(times.length / 4), '-frames:v', '1', path.join(dir, 'contact.jpg')]);
     console.log(`Preview: ${times.length} stills + contact sheet in out/preview/`);
   } else if (val('--clip')) {
     const [a, d] = val('--clip').split(',').map(Number), dir = path.join(OUT, 'preview'); mkdirSync(dir, {recursive: true});
