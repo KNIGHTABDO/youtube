@@ -1,0 +1,63 @@
+{
+  "channel": "@jip7e",
+  "reciter": {
+    "name": "Muhammad Siddiq Al-Minshawi",
+    "nameArabic": "محمد صديق المنشاوي",
+    "style": "Murattal",
+    "everyayahFolder": "Minshawy_Murattal_128kbps",
+    "audioBaseUrl": "https://everyayah.com/data/",
+    "prependBasmala": true
+  },
+  "sessionMinutes": 60,
+  "pomodoro": {
+    "focusMinutes": 25,
+    "breakMinutes": 5
+  },
+  "introSeconds": 12,
+  "outroSeconds": 16,
+  "gapBetweenSurahsSeconds": 2.5,
+  "surahCandidates": [
+    36,
+    55,
+    56,
+    67,
+    76,
+    78,
+    87,
+    93,
+    94,
+    95,
+    97,
+    103,
+    108,
+    112,
+    113,
+    114
+  ],
+  "video": {
+    "width": 1920,
+    "fps": 24,
+    "crf": 20,
+    "preset": "medium",
+    "audioBitrate": "192k"
+  },
+  "surahNames": {
+    "36": "Ya-Sin",
+    "55": "Ar-Rahman",
+    "56": "Al-Waqi'ah",
+    "67": "Al-Mulk",
+    "76": "Al-Insan",
+    "78": "An-Naba",
+    "87": "Al-A'la",
+    "93": "Ad-Duha",
+    "94": "Ash-Sharh",
+    "95": "At-Tin",
+    "97": "Al-Qadr",
+    "103": "Al-'Asr",
+    "108": "Al-Kawthar",
+    "112": "Al-Ikhlas",
+    "113": "Al-Falaq",
+    "114": "An-Nas"
+  },
+  "surahNamesNote": "Optional English spellings for the card and chapters; any surah not listed uses Tanzil's transliteration."
+}

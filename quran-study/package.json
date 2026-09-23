@@ -1,0 +1,21 @@
+{
+  "name": "quran-study-with-me",
+  "private": true,
+  "type": "module",
+  "description": "1-hour hand-drawn 'study with me' Quran recitation video (Pomodoro 25/5), rendered from Canvas 2D.",
+  "scripts": {
+    "audio": "node scripts/fetch-audio.mjs",
+    "timeline": "node scripts/build-timeline.mjs",
+    "preview": "node scripts/render.mjs --preview",
+    "render": "node scripts/render.mjs",
+    "build": "node scripts/fetch-audio.mjs && node scripts/build-timeline.mjs && node scripts/render.mjs"
+  },
+  "dependencies": {
+    "ffmpeg-static": "^5.2.0",
+    "ffprobe-static": "^3.1.0",
+    "puppeteer": "^24.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

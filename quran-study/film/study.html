@@ -1,0 +1,594 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Quran study with me</title>
+<style>
+  @font-face { font-family: 'Amiri Quran'; src: url(fonts/amiri-quran-arabic-400-normal.woff2) format('woff2'); }
+  @font-face { font-family: 'Amiri'; font-weight: 700; src: url(fonts/amiri-arabic-700-normal.woff2) format('woff2'); unicode-range: U+0600-06FF, U+0750-077F, U+08A0-08FF, U+FB50-FDFF, U+FE70-FEFF; }
+  @font-face { font-family: 'Amiri'; font-weight: 400; src: url(fonts/amiri-latin-400-normal.woff2) format('woff2'); unicode-range: U+0000-024F, U+2000-206F, U+2190-21FF; }
+  @font-face { font-family: 'Amiri'; font-weight: 400; font-style: italic; src: url(fonts/amiri-latin-400-italic.woff2) format('woff2'); unicode-range: U+0000-024F, U+2000-206F; }
+  body{margin:0;background:#111;color:#ccc;font:13px/1.4 ui-monospace,Menlo,monospace;display:flex;flex-direction:column;align-items:center;gap:10px;padding:12px}
+  canvas#c{width:min(96vw,1280px);height:auto;background:#000}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:center}
+  button{background:#222;color:#ddd;border:1px solid #444;padding:4px 10px;cursor:pointer;font:inherit}
+  input[type=range]{width:420px}
+</style>
+<canvas id="c"></canvas>
+<script src="core.js"></script>
+<script src="timeline.js"></script>
+<script>
+'use strict';
+// ============================================================
+// STUDY WITH ME — QUR'AN RECITATION (1 hour, Pomodoro 25/5)
+// Look: chalk and brush-pen lines on a night-indigo room, watercolour washes, one warm lantern.
+// Everything static is drawn once (it draws itself on during the intro, then holds as a single drawing).
+// Only things that are alive move: the lantern flame, tea steam, stars, drifting clouds, a sleeping cat's breath,
+// the moon crossing the window over the hour, the ayah card and the timer.
+// Cadence: 12 drawn frames per second (on twos), packed to 24 fps.
+//
+// t (video s)       what the viewer sees
+// 0 .. intro        the room draws itself, the lantern is lit, the title card writes on
+// intro .. +60 min  recitation: each ayah on the card as it is recited; Pomodoro 25/5 on the notebook
+// .. end            session complete card
+// ============================================================
+const ST = window.STUDY;
+const INTRO = ST.intro, SESSION = ST.session, OUTRO = ST.outro, S_END = INTRO + SESSION;
+const QS = new URLSearchParams(location.search);
+
+const COL = {
+  wall: '#282a4b', wallDeep: '#1b1d37', frame: '#35385f', skyTop: '#0b0f2b', skyLow: '#2b3467', city: '#141833',
+  chalk: '#f1e8d4', chalkDim: '#9ea4cb', warm: '#ffbe62', flame: '#ffd98c', flameCore: '#fff6dc',
+  wood: '#5a3d2f', woodDark: '#3a271f', woodLight: '#8c6048', paper: '#efe4ca', paperDim: '#d8cbac',
+  ink: '#2a2130', inkSoft: '#5b4e5c', gold: '#b88a3e', rose: '#b4574f', teal: '#3f8a80', glassAmber: '#e59a3c',
+  tea: '#a8531f', leaf: '#5e9a6c', cat: '#8e8aa6', catDark: '#5d5a78',
+};
+const PALETTE = makePalette({ paper: COL.wall, ink: COL.chalk, night: COL.wallDeep, chalk: COL.chalk, chalkDim: COL.chalkDim, light: COL.paper,
+  washBlend: 'source-over', fills: [COL.wood, COL.frame, COL.paper, COL.leaf], accents: [COL.rose, COL.teal, COL.gold, COL.warm], finish: 'flat' }, 'doodlePastel');
+usePalette(PALETTE);
+
+// fonts must be decoded before the first frame (core waits on _photoLoads)
+_photoLoads.push(document.fonts.load('60px "Amiri Quran"', 'بِسْمِ ٱللَّهِ'), document.fonts.load('700 50px Amiri', 'سورة'),
+  document.fonts.load('40px Amiri', 'Focus 0123'), document.fonts.load('italic 30px Amiri', 'session'));
+const QF = s => `${s}px "Amiri Quran"`, AF = s => `700 ${s}px Amiri`, LF = s => `${s}px Amiri`, LI = s => `italic ${s}px Amiri`;
+const arDigits = n => String(n).replace(/\d/g, d => '٠١٢٣٤٥٦٧٨٩'[d]);
+const mmss = sec => { sec = Math.max(0, Math.ceil(sec - 1e-6)); return `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`; };
+const T12 = t => Math.floor(t * 12 + 1e-6) / 12;   // living things on twos
+
+// ===================== GEOMETRY OF THE ROOM =====================
+const WIN = { x0: 150, x1: 850, ys: 452, yb: 700 };   // arched window: span, spring line, sill
+WIN.xm = (WIN.x0 + WIN.x1) / 2; WIN.r = (WIN.x1 - WIN.x0) * .55;
+// a pointed (two-centred) arch, offset o outward; returns a closed outline from the bottom-left corner
+function archPts(o = 0, yb = WIN.yb) {
+  const { x0, x1, ys, xm, r } = WIN, R = r + o, cl = x0 + r, cr = x1 - r, pts = [[x0 - o, yb], [x0 - o, ys]];
+  const aTop = Math.acos((xm - cl) / R);            // angle where the left arc meets the centre line
+  for (let k = 1; k <= 28; k++) { const a = Math.PI - (Math.PI - aTop) * k / 28; pts.push([cl + R * Math.cos(a), ys - R * Math.sin(a)]); }
+  for (let k = 27; k >= 0; k--) { const a = Math.PI - (Math.PI - aTop) * k / 28; pts.push([cr - R * Math.cos(a), ys - R * Math.sin(a)]); }
+  pts.push([x1 + o, ys], [x1 + o, yb]); return pts;
+}
+const apexY = o => WIN.ys - Math.sqrt((WIN.r + o) ** 2 - (WIN.xm - WIN.x0 - WIN.r) ** 2);
+const GLASS = polyPath(archPts(0));
+const DESK_Y = 812;
+const CARD = { x: 1000, y: 58, w: 840, h: 686 };
+const NOTE = { cx: 1462, cy: 946, w: 770, h: 228, rot: -.018 };
+const LANTERN = { x: 262, y: 858 };   // base centre (it stands on two books)
+const FLAME = { x: LANTERN.x, y: LANTERN.y - 118 };
+const TEA = { x: 842, y: 968 };
+const REHAL = { x: 590, y: 905 };
+const CAT = { x: 730, y: 700 };
+
+// ===================== SMALL DRAWING HELPERS =====================
+const P = (...xy) => { const out = []; for (let i = 0; i < xy.length; i += 2) out.push([xy[i], xy[i + 1]]); return out; };
+const shift = (pts, dx, dy) => pts.map(([x, y]) => [x + dx, y + dy]);
+function ellArc(cx, cy, rx, ry, a0, a1, n = 24) { const out = []; for (let k = 0; k <= n; k++) { const a = lerp(a0, a1, k / n); out.push([cx + rx * Math.cos(a), cy + ry * Math.sin(a)]); } return out; }
+function fillPts(c, pts, color, al = 1) { c.save(); c.globalAlpha *= al; c.fillStyle = color; c.fill(polyPath(pts)); c.restore(); }
+function text(c, str, x, y, font, color, o = {}) { const { align = 'center', al = 1, rtl = false, base = 'alphabetic', spacing = 0 } = o; c.save(); c.font = font; c.fillStyle = color; c.globalAlpha *= al; c.textAlign = align; c.textBaseline = base; c.direction = rtl ? 'rtl' : 'ltr'; if (spacing) c.letterSpacing = spacing + 'px'; c.fillText(str, x, y); c.restore(); }
+function softEllipse(c, x, y, rx, ry, color, al) { c.save(); c.translate(x, y); c.scale(1, ry / rx); const g = c.createRadialGradient(0, 0, 0, 0, 0, rx); g.addColorStop(0, alpha(color, al)); g.addColorStop(1, alpha(color, 0)); c.fillStyle = g; c.beginPath(); c.arc(0, 0, rx, 0, TAU); c.fill(); c.restore(); }
+// an 8-pointed star (khatam), the ornament of the card corners and the notebook
+function khatam(r) { const pts = []; for (let k = 0; k < 16; k++) { const a = k * Math.PI / 8 - Math.PI / 2, rr = k % 2 ? r * .62 : r; pts.push([Math.cos(a) * rr, Math.sin(a) * rr]); } return pts; }
+
+// ===================== THE STATIC ROOM, AS DOODLES THAT DRAW THEMSELVES =====================
+// Each plane is its own doodle so nearer things cover farther lines. start = when its pen begins (intro seconds).
+const LINE = { w: 2.6, color: COL.chalk };
+const THIN = { w: 1.5, color: COL.chalkDim };
+
+function skyBase(c) {   // behind everything: the night seen through the glass
+  resetT(c); c.save(); c.clip(GLASS);
+  const g = c.createLinearGradient(0, 70, 0, WIN.yb); g.addColorStop(0, COL.skyTop); g.addColorStop(.72, '#1d2452'); g.addColorStop(1, COL.skyLow); c.fillStyle = g; c.fillRect(0, 0, W, H);
+  softEllipse(c, WIN.xm, WIN.yb - 40, 420, 120, '#6f6fb0', .22);          // city haze on the horizon
+  grain(c, GLASS, [WIN.x0, 60, WIN.x1 - WIN.x0, WIN.yb], 500, '#c9cff5', .05, 41, 1.4);
+  c.restore();
+}
+
+// city on the horizon: houses, two domes, two minarets; lit windows come alive separately
+const CITY = (() => {
+  const r = rng(77), parts = [], lights = []; let x = WIN.x0 - 10;
+  while (x < WIN.x1 + 10) { const w = 34 + r() * 46, h = 34 + r() * 70; parts.push({ kind: 'house', x, w, h }); for (let k = 0; k < 3; k++) if (r() < .5) lights.push({ x: x + 7 + r() * (w - 16), y: WIN.yb - 12 - r() * (h - 22), p: 60 + r() * 200, ph: r(), on: r() < .75 ? .82 : 1 }); x += w + 2 + r() * 8; }
+  parts.push({ kind: 'dome', x: 265, w: 96, h: 70 }, { kind: 'minaret', x: 222, w: 16, h: 190 }, { kind: 'dome', x: 640, w: 120, h: 86 }, { kind: 'minaret', x: 784, w: 18, h: 225 }, { kind: 'minaret', x: 590, w: 13, h: 150 });
+  return { parts, lights };
+})();
+function cityOutline(p) {
+  const b = WIN.yb, { x, w, h } = p;
+  if (p.kind === 'house') return P(x, b, x, b - h, x + w, b - h, x + w, b);
+  if (p.kind === 'dome') { const drum = h * .45, pts = P(x, b, x, b - drum); pts.push(...ellArc(x + w / 2, b - drum, w / 2, h * .9, Math.PI, TAU, 28)); pts.push(...P(x + w, b - drum, x + w, b)); return pts; }
+  // minaret: shaft, balcony, slimmer shaft, cone
+  const bal = b - h * .72, top = b - h;
+  return P(x, b, x, bal, x - 7, bal, x - 7, bal - 9, x + 2, bal - 9, x + 2, top + 26, x + w / 2, top, x + w - 2, top + 26, x + w - 2, bal - 9, x + w + 7, bal - 9, x + w + 7, bal, x + w, bal, x + w, b);
+}
+function drawCity(d) {
+  for (const p of CITY.parts.filter(q => q.kind === 'house')) { const o = cityOutline(p); d.fill(polyPath(o), COL.city, { al: 1 }); d.line(o, { w: 1.2, color: alpha(COL.chalkDim, .55), smooth: false, speed: 5000 }); }
+  d.layer();
+  for (const p of CITY.parts.filter(q => q.kind !== 'house')) { const o = cityOutline(p); d.fill(polyPath(o), '#11152d', { al: 1 }); d.line(o, { w: 1.4, color: alpha(COL.chalkDim, .75), smooth: false, speed: 4000 });
+    if (p.kind === 'minaret') { const cx = p.x + p.w / 2, top = WIN.yb - p.h; d.line(P(cx, top, cx, top - 12), { w: 1.3, color: COL.chalkDim, smooth: false }); d.line(ellArc(cx + 2, top - 17, 4.5, 4.5, -2.2, 2.2, 10), { w: 1.3, color: COL.chalkDim }); }
+    if (p.kind === 'dome') { const cx = p.x + p.w / 2, top = WIN.yb - p.h * .45 - p.h * .9; d.line(P(cx, top, cx, top - 16), { w: 1.3, color: COL.chalkDim, smooth: false }); } }
+}
+
+function drawWall(d) {
+  d.mark((c, k) => { resetT(c); c.save(); c.globalAlpha *= k;
+    const p = new Path2D(); p.rect(0, 0, W, DESK_Y + 4); p.addPath(GLASS);
+    c.fillStyle = COL.wall; c.fill(p, 'evenodd');
+    const v = c.createLinearGradient(0, 0, 0, DESK_Y); v.addColorStop(0, alpha(COL.wallDeep, .75)); v.addColorStop(.5, alpha(COL.wallDeep, .1)); v.addColorStop(1, alpha(COL.wallDeep, .45)); c.fillStyle = v; c.fill(p, 'evenodd');
+    c.clip(p, 'evenodd'); grain(c, rectPath(0, 0, W, DESK_Y), [0, 0, W, DESK_Y], 2600, COL.chalk, .025, 5, 1.6);
+    // a faint plaster band with a hand-drawn star pattern, at dado height behind the desk
+    c.globalAlpha = .07 * k; c.strokeStyle = COL.chalk; c.lineWidth = 1.2;
+    for (let x = 30; x < W; x += 92) { c.save(); c.translate(x, DESK_Y - 44); c.beginPath(); khatam(18).forEach((q, i) => i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1])); c.closePath(); c.stroke(); c.restore(); }
+    c.beginPath(); c.moveTo(0, DESK_Y - 78); c.lineTo(W, DESK_Y - 78); c.moveTo(0, DESK_Y - 12); c.lineTo(W, DESK_Y - 12); c.stroke();
+    c.restore(); }, .5);
+}
+
+function drawWindow(d) {
+  const outer = archPts(34, WIN.yb), inner = archPts(0), mid = archPts(14);
+  const ring = new Path2D(); ring.addPath(polyPath(outer)); ring.addPath(polyPath(inner));
+  d.mark((c, k) => { c.save(); c.globalAlpha *= k; c.fillStyle = COL.frame; c.fill(ring, 'evenodd'); c.restore(); }, .3);
+  d.line(outer, { ...LINE, w: 3, speed: 2600 }).line(inner, { ...LINE, w: 2.4, speed: 2600 }).line(mid, { ...THIN, w: 1.1, speed: 3000 });
+  // mullion and transom, drawn as narrow frames
+  const xm = WIN.xm, top = apexY(0);
+  d.fill(polyPath(P(xm - 7, top + 4, xm + 7, top + 4, xm + 7, WIN.yb, xm - 7, WIN.yb)), COL.frame).line(P(xm - 7, top + 6, xm - 7, WIN.yb), { ...LINE, w: 1.8, smooth: false }).line(P(xm + 7, top + 6, xm + 7, WIN.yb), { ...LINE, w: 1.8, smooth: false });
+  d.fill(polyPath(P(WIN.x0, WIN.ys - 6, WIN.x1, WIN.ys - 6, WIN.x1, WIN.ys + 6, WIN.x0, WIN.ys + 6)), COL.frame).line(P(WIN.x0, WIN.ys - 6, xm - 7, WIN.ys - 6), { ...LINE, w: 1.8, smooth: false }).line(P(xm + 7, WIN.ys - 6, WIN.x1, WIN.ys - 6), { ...LINE, w: 1.8, smooth: false })
+    .line(P(WIN.x0, WIN.ys + 6, xm - 7, WIN.ys + 6), { ...LINE, w: 1.8, smooth: false }).line(P(xm + 7, WIN.ys + 6, WIN.x1, WIN.ys + 6), { ...LINE, w: 1.8, smooth: false });
+  // glass sheen
+  d.mark((c, k) => { c.save(); c.clip(GLASS); c.globalAlpha *= .06 * k; c.strokeStyle = '#ffffff'; c.lineWidth = 16; c.lineCap = 'round';
+    for (const [x, y] of [[250, 520], [290, 520], [610, 300], [650, 300]]) { c.beginPath(); c.moveTo(x, y); c.lineTo(x + 90, y - 110); c.stroke(); } c.restore(); }, .3);
+  // sill
+  const sill = P(96, WIN.yb, 904, WIN.yb, 918, WIN.yb + 16, 918, WIN.yb + 34, 82, WIN.yb + 34, 82, WIN.yb + 16);
+  d.fill(polyPath(sill), '#3b3f69').wash(polyPath(P(82, WIN.yb + 16, 918, WIN.yb + 16, 918, WIN.yb + 34, 82, WIN.yb + 34)), COL.wallDeep, { al: .6, off: 1, seed: 3 })
+    .line(sill, { ...LINE, close: true, w: 2.2, smooth: false }).line(P(84, WIN.yb + 16, 916, WIN.yb + 16), { ...THIN, smooth: false });
+}
+
+function drawPlant(d) {   // a small potted plant at the left of the sill
+  const x = 420, b = WIN.yb;
+  const pot = P(x - 34, b - 58, x + 34, b - 58, x + 26, b, x - 26, b);
+  const leaves = [[-.9, 70, 16], [-.45, 88, 18], [0, 96, 17], [.45, 84, 18], [.95, 66, 15], [-1.35, 50, 13], [1.35, 48, 13]];
+  d.layer();
+  for (const [a, L, wd] of leaves) { const ang = -Math.PI / 2 + a * .75, tip = [x + Math.cos(ang) * L, b - 58 + Math.sin(ang) * L], bx = x + Math.cos(ang) * 6, by = b - 60, nx = -Math.sin(ang), ny = Math.cos(ang);
+    const mid = [(bx + tip[0]) / 2, (by + tip[1]) / 2], leaf = [[bx, by], [mid[0] + nx * wd, mid[1] + ny * wd], tip, [mid[0] - nx * wd, mid[1] - ny * wd]];
+    d.fill(splinePath(leaf), '#2e5a45').wash(splinePath(leaf), COL.leaf, { al: .55, off: 2 }).line(spline(leaf, 5, true), { w: 1.6, color: COL.chalk, close: true, smooth: false }).line([[bx, by], tip], { w: 1, color: alpha(COL.chalk, .6), smooth: false }); }
+  d.layer();
+  d.fill(polyPath(pot), '#8e4d38').wash(polyPath(P(x - 34, b - 58, x - 8, b - 58, x - 12, b, x - 26, b)), '#5f2f24', { al: .6, off: 1 })
+    .line(pot, { ...LINE, close: true, w: 2.1, smooth: false }).line(P(x - 36, b - 46, x + 36, b - 46), { ...LINE, w: 1.6, smooth: false });
+}
+
+function drawDesk(d) {
+  const top = P(0, DESK_Y, W, DESK_Y, W, H, 0, H);
+  d.mark((c, k) => { resetT(c); c.save(); c.globalAlpha *= k; const g = c.createLinearGradient(0, DESK_Y, 0, H); g.addColorStop(0, '#4a3226'); g.addColorStop(.25, COL.wood); g.addColorStop(1, '#3c281f'); c.fillStyle = g; c.fill(polyPath(top));
+    // grain: long slow strokes, one path
+    const r = rng(12); c.strokeStyle = alpha('#1d120d', .35); c.lineWidth = 1.2; c.beginPath();
+    for (let k2 = 0; k2 < 70; k2++) { const y = DESK_Y + 12 + r() * (H - DESK_Y), x = r() * W, L = 180 + r() * 520; c.moveTo(x, y); c.bezierCurveTo(x + L * .3, y + (r() - .5) * 8, x + L * .6, y + (r() - .5) * 8, x + L, y + (r() - .5) * 6); }
+    c.stroke(); c.strokeStyle = alpha(COL.woodLight, .18); c.beginPath();
+    for (let k2 = 0; k2 < 40; k2++) { const y = DESK_Y + 20 + r() * (H - DESK_Y), x = r() * W, L = 120 + r() * 300; c.moveTo(x, y); c.quadraticCurveTo(x + L / 2, y + (r() - .5) * 6, x + L, y); } c.stroke();
+    grain(c, polyPath(top), [0, DESK_Y, W, H - DESK_Y], 1500, '#000', .08, 13, 1.6); c.restore(); }, .5);
+  d.line(P(-10, DESK_Y, W + 10, DESK_Y), { ...LINE, w: 2.6, smooth: false, speed: 5000 }).line(P(-10, DESK_Y + 9, W + 10, DESK_Y + 9), { w: 1.2, color: alpha(COL.chalk, .35), smooth: false, speed: 5000 });
+}
+
+function drawBooksUnderLantern(d) {
+  const x = LANTERN.x, b = LANTERN.y + 34;
+  const b1 = P(x - 118, b, x + 110, b, x + 116, b - 18, x - 112, b - 18), b2 = P(x - 100, b - 18, x + 104, b - 18, x + 96, b - 34, x - 96, b - 34);
+  d.layer().fill(polyPath(b1), '#2f4a5c').fill(polyPath(b2), '#6b2f33').wash(polyPath(P(x + 80, b, x + 110, b, x + 116, b - 18, x + 86, b - 18)), COL.paper, { al: .8, off: 1 })
+    .line(b1, { ...LINE, close: true, w: 2, smooth: false }).line(b2, { ...LINE, close: true, w: 2, smooth: false })
+    .line(P(x - 92, b - 9, x + 60, b - 9), { w: 1.1, color: COL.gold, smooth: false }).line(P(x - 80, b - 26, x + 40, b - 26), { w: 1.1, color: COL.gold, smooth: false });
+}
+
+// the fanous: hexagonal lantern, pointed cap, ring; coloured glass lit from inside (the light itself is live)
+function lanternShape() {
+  const x = LANTERN.x, b = LANTERN.y, bw = 64, tw = 74, yT = b - 206, yB = b - 16;
+  return { x, b, bw, tw, yT, yB,
+    base: P(x - 78, b, x + 78, b, x + 66, b - 16, x - 66, b - 16),
+    body: P(x - bw, yB, x + bw, yB, x + tw, yT, x - tw, yT),
+    roof: P(x - tw - 12, yT, x + tw + 12, yT, x + 40, yT - 30, x - 40, yT - 30),
+    cone: P(x - 40, yT - 30, x + 40, yT - 30, x + 4, yT - 104, x - 4, yT - 104),
+    ringY: yT - 118 };
+}
+function drawLantern(d) {
+  const L = lanternShape(), { x, yT, yB } = L;
+  d.layer();
+  // glass panes: left, centre, right (centre faces us); washes carry the colour, the glow is added live
+  const panes = [P(x - L.bw, yB, x - 24, yB, x - 26, yT, x - L.tw, yT), P(x - 24, yB, x + 24, yB, x + 26, yT, x - 26, yT), P(x + 24, yB, x + L.bw, yB, x + L.tw, yT, x + 26, yT)];
+  d.fill(polyPath(L.body), '#3a2a22');
+  d.wash(polyPath(panes[0]), '#2f7e76', { al: .85, off: 1, seed: 21 }).wash(polyPath(panes[1]), COL.glassAmber, { al: .9, off: 1, seed: 22 }).wash(polyPath(panes[2]), '#a8453c', { al: .85, off: 1, seed: 23 });
+  d.line(L.body, { ...LINE, close: true, w: 2.6, smooth: false });
+  for (const p of [-24, 24]) d.line(P(x + p, yB, x + p * 1.08, yT), { ...LINE, w: 2, smooth: false });
+  // pierced metalwork: pointed arches on the panes
+  for (const cx of [x - 47, x, x + 47]) { const w2 = cx === x ? 17 : 12, arch = [...ellArc(cx, yT + 64, w2, 30, Math.PI, 1.5 * Math.PI, 8), [cx, yT + 26], ...ellArc(cx, yT + 64, w2, 30, 1.5 * Math.PI, TAU, 8).slice(1)];
+    d.line([[cx - w2, yB - 12], ...arch, [cx + w2, yB - 12]], { w: 1.6, color: alpha('#2a1a12', .9), smooth: false }); }
+  d.fill(polyPath(L.base), '#6e5230').line(L.base, { ...LINE, close: true, w: 2.2, smooth: false });
+  d.fill(polyPath(L.roof), '#6e5230').line(L.roof, { ...LINE, close: true, w: 2.2, smooth: false });
+  d.fill(polyPath(L.cone), '#7d5d36').wash(polyPath(P(x, L.yT - 30, x + 40, L.yT - 30, x + 4, L.yT - 104)), '#3d2a18', { al: .5, off: 1 }).line(L.cone, { ...LINE, close: true, w: 2.2, smooth: false });
+  for (let k = 0; k < 5; k++) { const yy = L.yT - 36 - k * 13, hw = 34 - k * 6.5; d.line(P(x - hw, yy, x + hw, yy), { w: 1.1, color: alpha(COL.chalk, .6), smooth: false }); }
+  d.line(ellArc(x, L.ringY, 13, 14, 0, TAU, 20), { ...LINE, w: 2.2 });
+  d.mark((c, k) => { c.save(); c.globalAlpha *= k; c.fillStyle = COL.gold; c.beginPath(); c.arc(x, L.yT - 104, 4.5, 0, TAU); c.fill(); c.restore(); }, .1);
+}
+
+// the rehal (folding X stand) holding the open mushaf
+function drawRehal(d) {
+  const { x, y } = REHAL;
+  d.layer();
+  const legA = P(x - 118, y + 78, x - 96, y + 84, x + 112, y - 6, x + 92, y - 12), legB = P(x + 118, y + 78, x + 96, y + 84, x - 112, y - 6, x - 92, y - 12);
+  d.fill(polyPath(legB), '#6a4430').line(legB, { ...LINE, close: true, w: 2, smooth: false });
+  d.fill(polyPath(legA), '#7a5037').line(legA, { ...LINE, close: true, w: 2, smooth: false });
+  d.line(ellArc(x, y + 37, 14, 14, 0, TAU, 18), { w: 1.6, color: COL.chalk }).line(ellArc(x, y + 37, 6, 6, 0, TAU, 12), { w: 1.2, color: alpha(COL.chalk, .7) });
+  d.layer();
+  // book: cover edges, then the two pages as a shallow V
+  const cover = P(x - 158, y - 108, x, y - 70, x + 158, y - 108, x + 164, y - 6, x, y + 18, x - 164, y - 6);
+  d.fill(polyPath(cover), '#23463d').line(cover, { ...LINE, close: true, w: 2.2, smooth: false });
+  const pageL = [[x - 150, y - 112], [x - 80, y - 104], [x - 4, y - 80], [x - 4, y + 4], [x - 80, y - 18], [x - 154, y - 16]];
+  const pageR = pageL.map(([px, py]) => [2 * x - px, py]);
+  for (const [pg, sd] of [[pageL, 1], [pageR, 2]]) {
+    d.fill(splinePath(pg), COL.paper).wash(splinePath(pg), COL.paperDim, { al: .35, off: 2, seed: 30 + sd });
+    d.line(spline(pg, 5, true), { ...LINE, close: true, w: 1.8, color: '#e9dcc0', smooth: false });
+  }
+  // text lines on the pages (a quiet suggestion of script) and a small header box per page
+  d.mark((c, k) => { c.save(); c.globalAlpha *= k; c.strokeStyle = alpha(COL.ink, .5); c.lineWidth = 1.3; c.lineCap = 'round';
+    for (const side of [-1, 1]) { for (let r = 0; r < 7; r++) { const u0 = .14, u1 = .9, yy = y - 86 + r * 11.5; c.beginPath();
+        for (let u = u0; u <= u1; u += .02) { const px = x + side * lerp(10, 144, u), py = yy + lerp(20, -6, u) * (1 - r / 12) + Math.sin(u * 40 + r * 3) * .9 + (r / 6) * lerp(0, 6, u); u === u0 ? c.moveTo(px, py) : c.lineTo(px, py); }
+        c.stroke(); } }
+    c.strokeStyle = alpha(COL.gold, .8); c.lineWidth = 1.2; c.strokeRect(x - 118, y - 104, 70, 9); c.strokeRect(x + 48, y - 104, 70, 9); c.restore(); }, .5);
+  d.line(P(x, y - 80, x, y + 4), { w: 1.6, color: alpha(COL.ink, .6), smooth: false });
+  // ribbon marker
+  d.line(P(x + 2, y + 6, x + 10, y + 40, x + 4, y + 62), { w: 3, color: COL.rose });
+}
+
+function drawTeaGlass(d) {   // tulip glass on a saucer; the steam is live
+  const { x, y } = TEA;
+  const saucer = ellArc(x, y, 64, 13, 0, TAU, 40);
+  const glass = [[x - 30, y - 104], [x - 25, y - 72], [x - 16, y - 44], [x - 22, y - 12], [x - 16, y - 4], [x + 16, y - 4], [x + 22, y - 12], [x + 16, y - 44], [x + 25, y - 72], [x + 30, y - 104]];
+  const teaBody = [[x - 28.5, y - 90], [x - 25, y - 72], [x - 16, y - 44], [x - 22, y - 12], [x - 16, y - 5], [x + 16, y - 5], [x + 22, y - 12], [x + 16, y - 44], [x + 25, y - 72], [x + 28.5, y - 90]];
+  d.layer().fill(polyPath(saucer), '#d8cdb8').wash(polyPath(ellArc(x, y + 3, 58, 9, 0, Math.PI, 20)), '#8d7f6a', { al: .5, off: 1 }).line(saucer, { ...LINE, close: true, w: 2 });
+  d.line(ellArc(x, y, 38, 7, 0, TAU, 30), { w: 1.2, color: alpha('#6e6252', .9) });
+  d.fill(splinePath(teaBody), COL.tea).wash(splinePath([[x - 8, y - 86], [x + 20, y - 86], [x + 20, y - 20], [x + 8, y - 12]]), '#e08b3a', { al: .55, off: 1 });
+  d.line(spline(glass, 4, false), { ...LINE, w: 2.2, smooth: false }).line(ellArc(x, y - 104, 30, 6, 0, TAU, 30), { ...LINE, w: 1.8 }).line(ellArc(x, y - 90, 28.5, 5, 0, Math.PI, 16), { w: 1.2, color: '#f1b573' });
+  d.line(P(x - 18, y - 96, x - 13, y - 62), { w: 2.4, color: alpha('#ffffff', .55) });
+  // a spoon on the saucer
+  d.line(P(x + 34, y + 2, x + 92, y - 12), { w: 2.4, color: '#cfc7b9' }).line(ellArc(x + 98, y - 13, 8, 5, 0, TAU, 14), { w: 1.8, color: '#cfc7b9' });
+}
+
+function drawMisbaha(d) {   // prayer beads lying in a loop
+  const cx = 948, cy = 1028;
+  d.layer().mark((c, k) => { c.save(); c.globalAlpha *= k; const n = 33;
+    for (let i = 0; i < n; i++) { const a = i / n * TAU, rx = 58 + 6 * Math.sin(a * 2), px = cx + Math.cos(a) * rx, py = cy + Math.sin(a) * 20;
+      c.fillStyle = '#0f3b36'; c.beginPath(); c.arc(px, py, 5.4, 0, TAU); c.fill(); c.fillStyle = alpha('#9fe0cf', .55); c.beginPath(); c.arc(px - 1.6, py - 1.8, 1.7, 0, TAU); c.fill(); }
+    c.strokeStyle = COL.gold; c.lineWidth = 1.6; c.beginPath(); c.moveTo(cx + 60, cy + 4); c.lineTo(cx + 84, cy + 16); c.stroke();
+    c.fillStyle = '#0f3b36'; c.beginPath(); c.ellipse(cx + 92, cy + 20, 10, 6, .45, 0, TAU); c.fill();
+    c.strokeStyle = alpha(COL.gold, .9); c.lineWidth = 1; for (let t = -4; t <= 4; t++) { c.beginPath(); c.moveTo(cx + 98, cy + 24); c.lineTo(cx + 110 + t * 1.6, cy + 46 + Math.abs(t)); c.stroke(); } c.restore(); }, .6);
+}
+
+// the notebook where the timer is written; pencil next to it
+function noteCorners(inset = 0) { const { cx, cy, w, h, rot } = NOTE, ca = Math.cos(rot), sa = Math.sin(rot); return [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([u, v]) => { const X = u * (w / 2 - inset), Y = v * (h / 2 - inset); return [cx + X * ca - Y * sa, cy + X * sa + Y * ca]; }); }
+function drawNotebook(d) {
+  const c4 = noteCorners(), under = shift(noteCorners(), 7, 8);
+  d.layer().fill(polyPath(under), alpha('#120b08', .6)).fill(polyPath(c4), COL.paper).wash(polyPath(c4), COL.paperDim, { al: .25, off: 2, seed: 5 });
+  d.mark((c, k) => { c.save(); c.globalAlpha *= k; c.translate(NOTE.cx, NOTE.cy); c.rotate(NOTE.rot); const { w, h } = NOTE;
+    c.strokeStyle = alpha('#6c86a8', .35); c.lineWidth = 1; for (let y = -h / 2 + 34; y < h / 2 - 6; y += 26) { c.beginPath(); c.moveTo(-w / 2 + 10, y); c.lineTo(w / 2 - 10, y); c.stroke(); }
+    c.strokeStyle = alpha(COL.rose, .45); c.beginPath(); c.moveTo(-w / 2 + 250, -h / 2 + 6); c.lineTo(-w / 2 + 250, h / 2 - 6); c.stroke();
+    // spiral binding along the top
+    c.strokeStyle = alpha('#3b3440', .9); c.lineWidth = 2; for (let x = -w / 2 + 26; x < w / 2 - 14; x += 30) { c.beginPath(); c.ellipse(x, -h / 2 + 2, 5, 10, 0, Math.PI * .9, Math.PI * 2.1); c.stroke(); }
+    c.restore(); }, .4);
+  d.line(c4, { w: 2, color: '#e8dcc0', close: true, smooth: false });
+  // pencil, lying on the desk between the tea glass and the notebook
+  const px = 930, py = 918, a = -.32, L = 150, ca = Math.cos(a), sa = Math.sin(a), nx = -sa * 6.5, ny = ca * 6.5;
+  const tip = [px + ca * (L + 24), py + sa * (L + 24)], e1 = [px + ca * L, py + sa * L];
+  const body = [[px + nx, py + ny], [e1[0] + nx, e1[1] + ny], [e1[0] - nx, e1[1] - ny], [px - nx, py - ny]];
+  d.layer().fill(polyPath(shift(body, 4, 6)), alpha('#120b08', .5)).fill(polyPath(body), '#d9a441').fill(polyPath([[e1[0] + nx, e1[1] + ny], tip, [e1[0] - nx, e1[1] - ny]]), '#e7c9a0')
+    .fill(polyPath([[px + nx, py + ny], [px + ca * 16 + nx, py + sa * 16 + ny], [px + ca * 16 - nx, py + sa * 16 - ny], [px - nx, py - ny]]), '#c9716a')
+    .line([...body, body[0]], { w: 1.6, color: COL.chalk, smooth: false }).line([[e1[0] + nx, e1[1] + ny], tip, [e1[0] - nx, e1[1] - ny]], { w: 1.6, color: COL.chalk, smooth: false })
+    .line([[tip[0] - ca * 8, tip[1] - sa * 8], tip], { w: 2.6, color: '#3a3440', smooth: false });
+}
+
+// the ayah card pinned to the wall: parchment, double frame, star corners, two strips of tape
+function drawCardBase(d) {
+  const { x, y, w, h } = CARD, c4 = P(x, y, x + w, y, x + w, y + h, x, y + h);
+  d.layer().fill(polyPath(shift(c4, 8, 10)), alpha('#0b0c1d', .55)).fill(polyPath(c4), COL.paper).wash(polyPath(c4), COL.paperDim, { al: .22, off: 3, seed: 8 });
+  d.mark((c, k) => { c.save(); c.globalAlpha *= k; grain(c, polyPath(c4), [x, y, w, h], 1400, '#6d5a3a', .07, 9, 1.4);
+    const g = c.createRadialGradient(x + w / 2, y + h / 2, h * .3, x + w / 2, y + h / 2, h * .85); g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(90,60,20,.16)'); c.fillStyle = g; c.fillRect(x, y, w, h); c.restore(); }, .3);
+  d.line(c4, { w: 1.6, color: '#d9c9a4', close: true, smooth: false });
+  const fr = (i, col, wd) => d.line(P(x + i, y + i, x + w - i, y + i, x + w - i, y + h - i, x + i, y + h - i), { w: wd, color: col, close: true, smooth: false, speed: 3500 });
+  fr(22, COL.gold, 2.4); fr(30, alpha(COL.ink, .55), 1.2);
+  for (const [cx, cy] of [[x + 26, y + 26], [x + w - 26, y + 26], [x + 26, y + h - 26], [x + w - 26, y + h - 26]]) {
+    const s = shift(khatam(13), cx, cy); d.fill(polyPath(s), COL.paper).wash(polyPath(s), COL.gold, { al: .7, off: 0 }).line(s, { w: 1.4, color: '#7b5a26', close: true, smooth: false }); }
+  // header cartouche
+  const hx = x + w / 2, hy = y + 118, hw = 250, hh = 44, cart = P(hx - hw, hy, hx - hw + 30, hy - hh, hx + hw - 30, hy - hh, hx + hw, hy, hx + hw - 30, hy + hh, hx - hw + 30, hy + hh);
+  d.wash(polyPath(cart), '#e3cf9f', { al: .8, off: 1, seed: 12 }).line(cart, { w: 2, color: COL.gold, close: true, smooth: false }).line(shift(cart.map(([px, py]) => [hx + (px - hx) * .965, hy + (py - hy) * .8]), 0, 0), { w: 1, color: alpha(COL.ink, .5), close: true, smooth: false });
+  for (const s of [-1, 1]) { const cx = hx + s * (hw + 30); const st = shift(khatam(9), cx, hy); d.fill(polyPath(st), COL.gold).line(st, { w: 1, color: '#7b5a26', close: true, smooth: false }); }
+  // tape
+  for (const [tx, ty, a] of [[x + 70, y - 4, -.35], [x + w - 70, y - 4, .35]]) { const ca = Math.cos(a), sa = Math.sin(a), tp = [[-46, -13], [46, -13], [46, 13], [-46, 13]].map(([u, v]) => [tx + u * ca - v * sa, ty + u * sa + v * ca]);
+    d.fill(polyPath(tp), alpha('#e8e0c8', .72)).line(tp, { w: 1, color: alpha('#fff8e0', .7), close: true, smooth: false }); }
+}
+
+// watermark: the channel handle, hand-lettered in chalk at the bottom-left of the desk
+function drawHandle(d) {
+  d.layer().mark((c, k) => text(c, ST.channel, 34, H - 26, LI(30), COL.chalk, { align: 'left', al: .5 * k }), .4);
+}
+
+// all static planes in depth order; start times stagger the pens during the intro
+const PLANES = [
+  { name: 'city', start: .6, build: drawCity },
+  { name: 'wall', start: .0, build: drawWall },
+  { name: 'window', start: .4, build: drawWindow },
+  { name: 'plant', start: 2.2, build: drawPlant },
+  { name: 'desk', start: .8, build: drawDesk },
+  { name: 'card', start: 1.2, build: drawCardBase },
+  { name: 'books', start: 1.6, build: drawBooksUnderLantern },
+  { name: 'lantern', start: 1.9, build: drawLantern },
+  { name: 'rehal', start: 2.0, build: drawRehal },
+  { name: 'tea', start: 2.6, build: drawTeaGlass },
+  { name: 'misbaha', start: 3.1, build: drawMisbaha },
+  { name: 'notebook', start: 2.4, build: drawNotebook },
+  { name: 'handle', start: 4.2, build: drawHandle },
+];
+// Built on the first frame, after defineFilm has fixed the format (a canvas is cleared whenever the format resizes it).
+let G = null;
+function init() {
+  if (G) return G;
+  const DOODLES = PLANES.map(p => { const d = doodle({ start: p.start, seed: p.name.length * 31 + 7, speed: 2400, gap: .01, w: 2.4, color: COL.chalk }); p.build(d); return d; });
+  G = { DOODLES, ROOM_DONE: Math.max(...DOODLES.map(d => d.end)) + .4, skyLayer: layer(), roomLayer: layer(), roomReady: false,
+    moonSprite: makeMoon(), CLOUDS: makeClouds(), CAT_CELS: [0, .25, .6, 1, .75, .35].map(b => catDrawing(b, false)), CAT_FLICK: catDrawing(.3, true) };
+  return G;
+}
+function ensureStatic() { init(); if (G.roomReady) return; skyBase(G.skyLayer.getContext('2d')); const g = G.roomLayer.getContext('2d'); resetT(g); for (const d of G.DOODLES) d.draw(g, 1e6); G.roomReady = true; }
+
+// ===================== THE LIVING THINGS =====================
+function moonPos(T) { const u = clamp((T - INTRO) / SESSION, 0, 1); return [lerp(300, 700, u), 238 - 88 * Math.sin(Math.PI * u) + 20 * u]; }
+function makeMoon() { const L = layer(120, 120), g = L.getContext('2d'); resetT(g); g.translate(60, 60); g.fillStyle = '#f6ecd0'; g.beginPath(); g.arc(0, 0, 30, 0, TAU); g.fill();
+  g.globalCompositeOperation = 'destination-out'; g.beginPath(); g.arc(13, -8, 27, 0, TAU); g.fill(); g.globalCompositeOperation = 'source-over';
+  g.strokeStyle = alpha('#fff9e8', .8); g.lineWidth = 1.4; g.beginPath(); g.arc(0, 0, 30, 1.2, 4.6); g.stroke(); return L; }
+const STARS = (() => { const r = rng(5), out = []; while (out.length < 120) { const x = WIN.x0 + r() * (WIN.x1 - WIN.x0), y = 80 + r() * 420; if (y > WIN.yb - 150) continue; out.push({ x, y, s: .6 + r() * 1.6, w: .25 + r() * 1.1, ph: r() * TAU, big: r() < .09 }); } return out; })();
+function makeClouds() { const r = rng(9); return [0, 1, 2, 3].map(k => { const L = layer(360, 110), g = L.getContext('2d'); resetT(g); g.fillStyle = 'rgba(160,168,225,.11)';
+  for (let j = 0; j < 9; j++) { g.beginPath(); g.ellipse(60 + j * 28 + r() * 10, 62 - Math.sin(j / 8 * Math.PI) * 18 + r() * 8, 38 + r() * 20, 16 + r() * 10, 0, 0, TAU); g.fill(); }
+  return { L, y: 120 + k * 88 + r() * 30, v: 3 + r() * 3, x0: r() * 1000 }; }); }
+
+function drawSky(c, T, fade) {
+  const t = T12(T); c.save(); resetT(c); c.clip(GLASS); c.globalAlpha = fade;
+  // stars twinkle slowly
+  for (const s of STARS) { const a = .35 + .65 * (.5 + .5 * Math.sin(t * s.w + s.ph)); c.fillStyle = alpha('#f4efff', a * .9); c.beginPath(); c.arc(s.x, s.y, s.s, 0, TAU); c.fill();
+    if (s.big) { c.strokeStyle = alpha('#f4efff', a * .6); c.lineWidth = .9; c.beginPath(); c.moveTo(s.x - 5 * a - 2, s.y); c.lineTo(s.x + 5 * a + 2, s.y); c.moveTo(s.x, s.y - 5 * a - 2); c.lineTo(s.x, s.y + 5 * a + 2); c.stroke(); } }
+  const [mx, my] = moonPos(T); glow(c, mx, my, 150, '#cfd6ff', .22 * fade); glow(c, mx, my, 56, '#fff4d8', .35 * fade); c.drawImage(G.moonSprite, mx - 60, my - 60, 120, 120);
+  for (const cl of G.CLOUDS) { const span = WIN.x1 - WIN.x0 + 460, x = WIN.x0 - 380 + ((cl.x0 + cl.v * t) % span); c.drawImage(cl.L, x, cl.y, 360, 110); }
+  c.restore();
+}
+
+function drawCityLights(c, T, fade) {
+  const t = T12(T); c.save(); resetT(c); c.clip(GLASS);
+  for (const l of CITY.lights) { const on = ((t / l.p + l.ph) % 1) < l.on; if (!on) continue; c.fillStyle = alpha('#ffcf7a', .75 * fade); c.fillRect(l.x, l.y, 5, 6); c.fillStyle = alpha('#ffcf7a', .12 * fade); c.fillRect(l.x - 3, l.y - 3, 11, 12); }
+  c.restore();
+}
+
+const flick = t => .9 + .065 * noise1(t * 1.6, 3) + .035 * noise1(t * 4.7, 7);
+function drawLight(c, T, k) {   // k: 0 unlit .. 1 lit
+  if (k <= 0) return; const t = T12(T), f = flick(t) * k; resetT(c);
+  // warm air in the room and a pool on the desk (screen), then the flame itself
+  glow(c, FLAME.x, FLAME.y, 760 * (.96 + .04 * f), '#ff9e4a', .23 * f);
+  glow(c, FLAME.x, FLAME.y, 330, '#ffb866', .3 * f);
+  c.save(); c.globalCompositeOperation = 'screen'; softEllipse(c, LANTERN.x + 120, DESK_Y + 90, 520, 120, '#ff9c4d', .2 * f); c.restore();
+  // lit panes
+  const L = lanternShape(); c.save(); c.globalCompositeOperation = 'screen'; c.globalAlpha = .5 * f; c.fillStyle = '#ffb45e'; c.fill(polyPath(L.body)); c.restore();
+  const sway = .9 * noise1(t * 2.1, 11), hgt = 30 + 4 * noise1(t * 3.3, 5);
+  const fl = [[FLAME.x - 9, FLAME.y + 8], [FLAME.x - 8, FLAME.y - 6], [FLAME.x + sway * 4, FLAME.y - hgt], [FLAME.x + 8, FLAME.y - 6], [FLAME.x + 9, FLAME.y + 8]];
+  c.save(); c.globalAlpha = k; c.fillStyle = COL.flame; c.fill(splinePath(fl)); c.fillStyle = COL.flameCore; c.fill(splinePath(fl.map(([x, y]) => [FLAME.x + (x - FLAME.x) * .5, FLAME.y + 6 + (y - FLAME.y - 6) * .55])));
+  c.fillStyle = '#3a2a22'; c.fillRect(FLAME.x - 1.5, FLAME.y + 6, 3, 12); c.restore();
+  glow(c, FLAME.x, FLAME.y - 8, 60, '#fff0c2', .75 * f);
+}
+
+function drawSteam(c, T, k) {
+  const t = T12(T); if (k <= 0) return;
+  for (let w = 0; w < 3; w++) { const ph = ((t / 3.6 + w / 3) % 1), rise = 24 + ph * 84, base = TEA.y - 112, pts = [];
+    for (let s = 0; s <= 12; s++) { const u = s / 12, y = base - rise * u - ph * 16; pts.push([TEA.x - 10 + w * 10 + Math.sin(u * 5.2 + t * 1.3 + w * 2) * (4 + 11 * u) * (.6 + ph), y]); }
+    const a = Math.sin(Math.PI * ph) * .45 * k; brush(c, pts, { w: 2.6, color: '#f6ead6', al: a, seed: 90 + w, amp: .6, smooth: true }); }
+}
+
+// the cat: whole drawings, one per breath position, plus a replacement drawing for an ear flick
+function catDrawing(breath, flick) {
+  const L = layer(280, 160), g = L.getContext('2d'); resetT(g); g.translate(140, 136);   // local origin on the sill, under the middle of the body
+  const s = 1 + .04 * breath, Y = y => y * s, dark = '#2b2640', d = doodle({ start: 0, seed: 404, speed: 1e9, w: 2.2, color: COL.chalk });
+  const body = [[-100, 0], [-106, Y(-28)], [-84, Y(-58)], [-36, Y(-72)], [14, Y(-68)], [52, Y(-48)], [66, -18], [62, 0]];
+  const belly = [[-92, -4], [-60, Y(-30)], [-10, Y(-36)], [40, Y(-26)], [56, -8], [20, -2]];
+  const head = [[54, -4], [50, -28], [60, -50], [84, -58], [108, -52], [120, -32], [116, -10], [102, 0], [68, 0]];
+  const earL = flick ? [[62, -47], [58, -82], [80, -57]] : [[62, -47], [64, -80], [80, -57]], earR = [[96, -57], [112, -80], [116, -44]];
+  const tail = [[-100, -6], [-84, 6], [-40, 11], [10, 11], [52, 6], [70, 0]];
+  d.fill(splinePath(body), COL.cat).wash(splinePath(belly), '#6f6a8e', { al: .7, off: 1, seed: 3 })
+    .line(spline(body, 5, false), { w: 2.3, smooth: false })
+    .line([[-72, Y(-60)], [-66, Y(-44)]], { w: 2.2, color: alpha(dark, .55), smooth: false }).line([[-46, Y(-68)], [-42, Y(-50)]], { w: 2.2, color: alpha(dark, .55), smooth: false })
+    .line([[-18, Y(-71)], [-16, Y(-53)]], { w: 2.2, color: alpha(dark, .55), smooth: false }).line([[10, Y(-67)], [8, Y(-50)]], { w: 2.2, color: alpha(dark, .55), smooth: false })
+    .fill(splinePath(earL), COL.catDark).fill(splinePath(earR), COL.catDark).wash(polyPath([[66, -52], [66, -72], [76, -58]]), '#d99aa6', { al: .7, off: 0 }).wash(polyPath([[100, -58], [110, -72], [111, -50]]), '#d99aa6', { al: .7, off: 0 })
+    .fill(splinePath(head), COL.cat).line(spline(head, 5, true), { w: 2.3, smooth: false }).line(earL, { w: 2, smooth: false }).line(earR, { w: 2, smooth: false })
+    .line([[70, -31], [76, -26], [83, -31]], { w: 2, color: dark }).line([[94, -31], [100, -26], [107, -31]], { w: 2, color: dark })
+    .fill(polyPath([[86, -21], [92, -21], [89, -17]]), '#d98a96').line([[89, -17], [86, -12], [82, -13]], { w: 1.3, color: dark }).line([[89, -17], [92, -12], [96, -13]], { w: 1.3, color: dark })
+    .line([[58, -18], [42, -22]], { w: 1, color: alpha(COL.chalk, .6), smooth: false }).line([[58, -14], [42, -12]], { w: 1, color: alpha(COL.chalk, .6), smooth: false })
+    .line([[118, -18], [134, -22]], { w: 1, color: alpha(COL.chalk, .6), smooth: false }).line([[118, -14], [134, -12]], { w: 1, color: alpha(COL.chalk, .6), smooth: false })
+    .line(spline(tail, 5, false), { w: 11, color: COL.catDark, smooth: false }).line(spline(tail.slice(-3), 5, false), { w: 9, color: '#b8b3cc', smooth: false })
+    .line(spline(tail, 5, false).map(([x, y]) => [x, y + 5.5]), { w: 1.6, smooth: false })
+    .fill(splinePath([[34, 2], [36, -10], [52, -12], [56, 2]]), '#b8b3cc').line([[34, 2], [36, -10], [52, -12], [56, 2]], { w: 1.6 });
+  d.draw(g, 1e6); return L;
+}
+function drawCat(c, T, k = 1) {
+  if (k <= 0) return;
+  const t = T12(T), period = 3.4, u = (t % period) / period, idx = [0, 0, 1, 2, 3, 3, 3, 4, 5, 5, 0, 0][Math.floor(u * 12)];   // in (quicker), hold, out (slower), pause
+  const slot = Math.floor(t / 43), flickOn = hash(slot, 17) < .55 && (t - slot * 43) > 20 && (t - slot * 43) < 20.34;
+  c.save(); resetT(c); c.globalAlpha = k; c.drawImage(flickOn ? G.CAT_FLICK : G.CAT_CELS[idx], CAT.x - 140, CAT.y - 136, 280, 160); c.restore();
+}
+
+// ===================== THE AYAH CARD =====================
+const SURAH = Object.fromEntries(ST.surahs.map(s => [s.id, s]));
+const segAt = T => { let lo = 0, hi = ST.segs.length - 1, best = -1; while (lo <= hi) { const m = (lo + hi) >> 1; if (ST.segs[m].t0 <= T + 1e-6) { best = m; lo = m + 1; } else hi = m - 1; } return best; };
+const BODY = { x: CARD.x + 60, y: CARD.y + 196, w: CARD.w - 120, h: 386 };
+
+// lines of an ayah that fit the body; long ayahs shrink, then split into pages
+const _meas = document.createElement('canvas').getContext('2d');
+function wrap(words, size, maxW) { _meas.font = QF(size); _meas.direction = 'rtl'; const lines = []; let cur = '';
+  for (const w of words) { const tryL = cur ? cur + ' ' + w : w; if (_meas.measureText(tryL).width <= maxW || !cur) cur = tryL; else { lines.push(cur); cur = w; } } if (cur) lines.push(cur); return lines; }
+function layoutAyah(textStr, marker, big = false) {
+  const words = (textStr + (marker ? ' ' + marker : '')).split(' ');
+  for (let size = big ? 70 : 60; size >= 40; size -= 2) { const lh = size * 1.9, lines = wrap(words, size, BODY.w); if (lines.length * lh <= BODY.h) return [{ size, lh, lines }]; }
+  // still too long at 40 px: pages of whole lines
+  const size = 40, lh = size * 1.9, lines = wrap(words, size, BODY.w), per = Math.floor(BODY.h / lh), pages = [];
+  for (let i = 0; i < lines.length; i += per) pages.push({ size, lh, lines: lines.slice(i, i + per) }); return pages;
+}
+const _layouts = new Map();
+function pagesOf(si) { if (!_layouts.has(si)) { const s = ST.segs[si]; _layouts.set(si, s.a === 0 ? layoutAyah(s.text, '', true) : layoutAyah(s.text, '۝' + arDigits(s.a))); } return _layouts.get(si); }
+function pageAt(si, T) { const pages = pagesOf(si); if (pages.length === 1) return 0; const s = ST.segs[si], tot = pages.reduce((a, p) => a + p.lines.join(' ').length, 0); let acc = 0; const u = (T - s.t0) / (s.t1 - s.t0) * tot;
+  for (let k = 0; k < pages.length; k++) { acc += pages[k].lines.join(' ').length; if (u < acc) return k; } return pages.length - 1; }
+
+function cardHeader(c, title, sub) {
+  text(c, title, CARD.w / 2, 132, AF(46), COL.ink, { rtl: true });
+  if (sub) text(c, sub, CARD.w / 2, 196, LI(25), COL.inkSoft, { al: .85 });
+}
+function cardFooter(c, left, right, prog) {
+  const y = CARD.h - 92, x0 = 72, x1 = CARD.w - 72;
+  if (prog !== null) { c.save(); c.strokeStyle = alpha(COL.ink, .18); c.lineWidth = 2; c.lineCap = 'round'; c.beginPath(); c.moveTo(x0, y); c.lineTo(x1, y); c.stroke();
+    c.strokeStyle = alpha(COL.gold, .95); c.lineWidth = 3; c.beginPath(); c.moveTo(x0, y); c.lineTo(lerp(x0, x1, prog), y); c.stroke(); c.fillStyle = COL.gold; c.beginPath(); c.arc(lerp(x0, x1, prog), y, 5, 0, TAU); c.fill(); c.restore(); }
+  text(c, left, x0, y + 40, LI(23), COL.inkSoft, { align: 'left', al: .9 }); text(c, right, x1, y + 40, LF(24), COL.inkSoft, { align: 'right', al: .9 });
+}
+function cardAyahLines(c, pg, color = COL.ink) {
+  const block = pg.lines.length * pg.lh, y0 = BODY.y - CARD.y + (BODY.h - block) / 2 + pg.lh * .62;
+  pg.lines.forEach((ln, k) => text(c, ln, CARD.w / 2, y0 + k * pg.lh, QF(pg.size), color, { rtl: true }));
+}
+// page content is drawn once into a card-sized layer and reused while it holds
+const _pages = new Map();
+function cardPage(key, draw) { if (_pages.has(key)) return _pages.get(key); if (_pages.size > 6) _pages.delete(_pages.keys().next().value);
+  const L = layer(CARD.w, CARD.h), g = L.getContext('2d'); resetT(g); draw(g); _pages.set(key, L); return L; }
+
+function titlePage(g) {
+  cardHeader(g, 'دراسة مع القرآن', 'study with me  ·  1 hour  ·  pomodoro 25 / 5');
+  cardAyahLines(g, layoutAyah(ST.opening.text, '۝' + arDigits(ST.opening.a))[0]);
+  text(g, `Al-Muzzammil ${ST.opening.s}:${ST.opening.a}  —  “and recite the Qur’an with measured recitation”`, CARD.w / 2, BODY.y - CARD.y + BODY.h - 6, LI(23), COL.inkSoft, { al: .9 });
+  cardFooter(g, `Sheikh ${ST.reciter} · ${ST.style.toLowerCase()}`, ST.channel, null);
+}
+function ayahPage(si, pageIdx) { return g => { const s = ST.segs[si], su = SURAH[s.s];
+  cardHeader(g, 'سورة ' + su.name, `Surah ${su.translit}  ·  ${su.id}  ·  ${su.verses} ayahs`);
+  const pg = pagesOf(si)[pageIdx]; cardAyahLines(g, pg);
+  const pages = pagesOf(si).length;
+  cardFooter(g, `Sheikh ${ST.reciter} · ${ST.style.toLowerCase()}`, s.a === 0 ? 'bismillah' : `ayah ${s.a} / ${su.verses}${pages > 1 ? `  (${pageIdx + 1}/${pages})` : ''}`, s.a === 0 ? 0 : s.a / su.verses); }; }
+function quietPage(g) {
+  cardHeader(g, 'صَدَقَ ٱللَّهُ ٱلْعَظِيمُ', 'the recitation is complete — finish your session in quiet');
+  text(g, 'keep going, you are almost there', CARD.w / 2, BODY.y - CARD.y + BODY.h / 2 + 10, LI(36), COL.inkSoft);
+  cardFooter(g, `Sheikh ${ST.reciter} · ${ST.style.toLowerCase()}`, ST.channel, 1);
+}
+function outroPage(g) {
+  cardHeader(g, 'بارك الله فيكم', 'session complete');
+  text(g, 'two focus sessions done.', CARD.w / 2, BODY.y - CARD.y + 120, LI(40), COL.ink);
+  text(g, 'may Allah put barakah in your time', CARD.w / 2, BODY.y - CARD.y + 185, LI(32), COL.inkSoft);
+  text(g, 'and make your studies easy for you.', CARD.w / 2, BODY.y - CARD.y + 232, LI(32), COL.inkSoft);
+  text(g, `see you in the next session  ·  ${ST.channel}`, CARD.w / 2, BODY.y - CARD.y + 330, LF(28), COL.gold);
+  cardFooter(g, `recitation: Sheikh ${ST.reciter}`, 'text: tanzil.net', null);
+}
+
+// which page shows at time T, and the one before it (for the crossfade)
+function cardState(T) {
+  if (T < INTRO) return { key: 'title', draw: titlePage, t0: 0 };
+  if (T >= S_END) return { key: 'outro', draw: outroPage, t0: S_END };
+  const si = segAt(T);
+  if (si < 0) return { key: 'title', draw: titlePage, t0: 0 };
+  const s = ST.segs[si];
+  if (si === ST.segs.length - 1 && T > s.t1 + 3) return { key: 'quiet', draw: quietPage, t0: s.t1 + 3 };
+  const p = pageAt(si, T), pages = pagesOf(si); let t0 = s.t0;
+  if (p > 0) { const tot = pages.reduce((a, q) => a + q.lines.join(' ').length, 0); let acc = 0; for (let k = 0; k < p; k++) acc += pages[k].lines.join(' ').length; t0 = s.t0 + (s.t1 - s.t0) * acc / tot; }
+  return { key: `${si}.${p}`, draw: ayahPage(si, p), t0 };
+}
+const FADE_OUT = .22, FADE_IN = .38;
+function drawCard(c, T, reveal = 1) {
+  const now = cardState(T), dt = T - now.t0; c.save(); resetT(c);
+  if (dt < FADE_IN && now.t0 > 0) { const prev = cardState(now.t0 - 1e-3); if (prev.key !== now.key) { const a = 1 - clamp(dt / FADE_OUT, 0, 1); if (a > 0) { c.globalAlpha = a; c.drawImage(cardPage(prev.key, prev.draw), CARD.x, CARD.y, CARD.w, CARD.h); } }
+    c.globalAlpha = easeInOutSine(clamp((dt - FADE_OUT * .5) / (FADE_IN - FADE_OUT * .5), 0, 1)); }
+  else c.globalAlpha = 1;
+  c.globalAlpha *= reveal; c.drawImage(cardPage(now.key, now.draw), CARD.x, CARD.y, CARD.w, CARD.h); c.restore();
+}
+
+// ===================== THE POMODORO NOTEBOOK =====================
+function phaseAt(T) { for (const p of ST.phases) if (T < p.t1) return p; return null; }
+function drawTimer(c, T, reveal = 1) {
+  if (reveal <= 0) return;
+  const focusN = ST.phases.filter(p => p.kind === 'focus').length;
+  let label, sub, remain, frac, kind;
+  if (T < INTRO) { kind = 'focus'; label = 'FOCUS'; sub = `session 1 of ${focusN}  ·  get ready`; remain = ST.phases[0].t1 - ST.phases[0].t0; frac = 0; }
+  else if (T >= S_END) { kind = 'done'; label = 'DONE'; sub = 'well done  ·  rest now'; remain = 0; frac = 1; }
+  else { const p = phaseAt(T); kind = p.kind; remain = p.t1 - T; frac = (T - p.t0) / (p.t1 - p.t0);
+    label = p.kind === 'focus' ? 'FOCUS' : 'BREAK'; sub = p.kind === 'focus' ? `session ${p.n} of ${focusN}  ·  one task` : 'rest your eyes  ·  stretch'; }
+  const accent = kind === 'break' ? COL.teal : kind === 'done' ? COL.gold : COL.rose;
+  c.save(); resetT(c); c.globalAlpha = reveal; c.translate(NOTE.cx, NOTE.cy); c.rotate(NOTE.rot); c.translate(-NOTE.w / 2, -NOTE.h / 2);
+  // dial
+  const dx = 132, dy = 122, R = 78;
+  c.save(); c.globalAlpha *= .9; c.fillStyle = alpha(accent, .22); c.beginPath(); c.moveTo(dx, dy); c.arc(dx, dy, R - 6, -Math.PI / 2, -Math.PI / 2 + TAU * clamp(1 - frac, 0, 1)); c.closePath(); c.fill(); c.restore();
+  c.strokeStyle = alpha(COL.ink, .85); c.lineWidth = 2.4; wob(c, ellPts(dx, dy, R, R, 0, 60), 1.1, 5, true);
+  c.lineWidth = 1.4; for (let k = 0; k < 12; k++) { const a = k / 12 * TAU - Math.PI / 2, r0 = k % 3 ? R - 10 : R - 16; c.beginPath(); c.moveTo(dx + Math.cos(a) * r0, dy + Math.sin(a) * r0); c.lineTo(dx + Math.cos(a) * (R - 3), dy + Math.sin(a) * (R - 3)); c.stroke(); }
+  const ha = -Math.PI / 2 + TAU * clamp(1 - frac, 0, 1); c.strokeStyle = accent; c.lineWidth = 3.2; c.lineCap = 'round'; c.beginPath(); c.moveTo(dx, dy); c.lineTo(dx + Math.cos(ha) * (R - 20), dy + Math.sin(ha) * (R - 20)); c.stroke();
+  c.fillStyle = COL.ink; c.beginPath(); c.arc(dx, dy, 5, 0, TAU); c.fill();
+  // numbers
+  text(c, label, 290, 70, LF(30), accent, { align: 'left', spacing: 6 });
+  text(c, mmss(remain), 286, 150, LF(92), COL.ink, { align: 'left' });
+  text(c, sub, 292, 196, LI(24), COL.inkSoft, { align: 'left' });
+  // session strip: focus / break / focus / break
+  const sx0 = 548, sx1 = NOTE.w - 30, sy = 56, sh = 16, tot = SESSION; let xx = sx0;
+  text(c, 'today', sx0, 40, LI(22), COL.inkSoft, { align: 'left' });
+  for (const p of ST.phases) { const w = (sx1 - sx0) * (p.t1 - p.t0) / tot, col = p.kind === 'focus' ? COL.rose : COL.teal, done = clamp((T - p.t0) / (p.t1 - p.t0), 0, 1);
+    c.fillStyle = alpha(col, .18); c.fillRect(xx + 1, sy, w - 2, sh); c.fillStyle = alpha(col, .85); c.fillRect(xx + 1, sy, (w - 2) * done, sh); c.strokeStyle = alpha(COL.ink, .5); c.lineWidth = 1; c.strokeRect(xx + 1, sy, w - 2, sh); xx += w; }
+  const el = clamp(T - INTRO, 0, SESSION);
+  text(c, `${Math.floor(el / 60)} min`, sx0, 118, LF(36), COL.ink, { align: 'left' });
+  text(c, `of ${Math.round(SESSION / 60)}`, sx1, 118, LI(24), COL.inkSoft, { align: 'right' });
+  // a box per focus session, ticked when it is done
+  let n = 0; for (const p of ST.phases) if (p.kind === 'focus') { const doneP = T >= p.t1; const cx = sx0 + 12 + n * 38, cy = 168; c.strokeStyle = alpha(COL.ink, .7); c.lineWidth = 1.6; c.strokeRect(cx - 12, cy - 12, 24, 24);
+    if (doneP) { c.strokeStyle = COL.rose; c.lineWidth = 3; c.beginPath(); c.moveTo(cx - 8, cy); c.lineTo(cx - 2, cy + 7); c.lineTo(cx + 11, cy - 11); c.stroke(); } n++; }
+  text(c, 'sessions', sx1, 176, LI(22), COL.inkSoft, { align: 'right' });
+  c.restore();
+  // a soft pulse on the dial whenever a phase changes
+  const edges = ST.phases.map(p => p.t0).concat([S_END]); const since = Math.min(...edges.map(e => T - e).filter(v => v >= 0).concat([99]));
+  if (since < 3 && T > INTRO) { const k = (1 - since / 3); const ca = Math.cos(NOTE.rot), sa = Math.sin(NOTE.rot), X = -NOTE.w / 2 + dx, Y = -NOTE.h / 2 + dy; glow(c, NOTE.cx + X * ca - Y * sa, NOTE.cy + X * sa + Y * ca, 150, accent === COL.teal ? '#7fd6c8' : '#ffb07a', .5 * k * (.6 + .4 * Math.cos(since * 6))); }
+}
+
+// ===================== SCENES =====================
+function room(c, T, { introTau = null } = {}) {
+  ensureStatic();
+  if (introTau === null) { blit(c, G.skyLayer); drawSky(c, T, 1); blit(c, G.roomLayer); }
+  else { c.save(); resetT(c); c.fillStyle = COL.wallDeep; c.fillRect(0, 0, W, H); c.restore();
+    const skyIn = sm(.2, 1.6, introTau); c.save(); c.globalAlpha = skyIn; blit(c, G.skyLayer); c.restore(); drawSky(c, T, skyIn);
+    resetT(c); for (const d of G.DOODLES) d.draw(c, introTau); }
+  const lit = introTau === null ? 1 : sm(G.ROOM_DONE - .6, G.ROOM_DONE + 1.2, introTau, easeOut);
+  drawCityLights(c, T, introTau === null ? 1 : sm(2, 4, introTau));
+  drawCat(c, T, introTau === null ? 1 : sm(2.4, 3.4, introTau));
+  drawLight(c, T, lit);
+  drawSteam(c, T, introTau === null ? 1 : sm(4, 6, introTau));
+}
+function sceneIntro(c, tau) {
+  init(); room(c, tau, { introTau: tau * Math.max(1, (G.ROOM_DONE + 1) / (INTRO - 1.2)) });
+  drawCard(c, tau, sm(3.4, 5, tau)); drawTimer(c, tau, sm(4.2, 5.8, tau));
+  c.save(); resetT(c); c.globalAlpha = 1 - sm(0, .8, tau); c.fillStyle = '#000'; c.fillRect(0, 0, W, H); c.restore();
+}
+function sceneStudy(c, tau) { const T = INTRO + tau; room(c, T); drawCard(c, T); drawTimer(c, T); }
+function sceneOutro(c, tau) { const T = S_END + tau; room(c, T); drawCard(c, T); drawTimer(c, T);
+  c.save(); resetT(c); c.globalAlpha = sm(OUTRO - 1.6, OUTRO, tau); c.fillStyle = '#000'; c.fillRect(0, 0, W, H); c.restore(); }
+function sceneThumb(c) {   // YouTube thumbnail: the room at a quiet moment, big lettering on the card
+  const T = INTRO + 600; room(c, T);
+  const { x, y, w, h } = CARD; c.save(); resetT(c); c.translate(x, y);
+  const inner = rectPath(38, 38, w - 76, h - 76); c.fillStyle = COL.paper; c.fill(inner); grain(c, inner, [38, 38, w - 76, h - 76], 900, '#6d5a3a', .07, 19, 1.4);
+  text(c, 'STUDY WITH ME', w / 2, 170, LF(90), COL.ink, { spacing: 3 });
+  text(c, '1 HOUR · QUR’AN', w / 2, 285, LF(84), COL.rose, { spacing: 3 });
+  text(c, 'وَرَتِّلِ ٱلْقُرْءَانَ تَرْتِيلًا', w / 2, 430, QF(72), COL.ink, { rtl: true });
+  text(c, 'pomodoro 25/5  ·  Sheikh al-Minshawi', w / 2, 560, LI(40), COL.inkSoft);
+  c.restore(); drawTimer(c, INTRO + 18 * 60 + 17);
+}
+
+if (QS.has('thumb')) defineFilm({ palette: PALETTE, fps: 12, format: { ar: '16:9', width: 1920 }, timeline: [{ name: 'thumb', dur: 1 / 12, fn: sceneThumb }] });
+else defineFilm({ palette: PALETTE, fps: 12, format: { ar: '16:9', width: 1920 }, timeline: [
+  { name: 'intro', dur: INTRO, fn: sceneIntro },
+  { name: 'study', dur: SESSION, fn: sceneStudy },
+  { name: 'outro', dur: OUTRO, fn: sceneOutro },
+] });
+// JPEG frames for the streaming renderer (PNG is ~6x slower to encode for an hour of frames)
+window.__jpeg = (i, q = .93) => { window.__drawFrame(i); return document.getElementById('c').toDataURL('image/jpeg', q); };
+window.__timeOf = i => i / 12;
+</script>
