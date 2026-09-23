@@ -432,9 +432,12 @@ const BODY = { x: CARD.x + 60, y: CARD.y + 196, w: CARD.w - 120, h: 386 };
 const _meas = document.createElement('canvas').getContext('2d');
 function wrap(words, size, maxW) { _meas.font = QF(size); _meas.direction = 'rtl'; const lines = []; let cur = '';
   for (const w of words) { const tryL = cur ? cur + ' ' + w : w; if (_meas.measureText(tryL).width <= maxW || !cur) cur = tryL; else { lines.push(cur); cur = w; } } if (cur) lines.push(cur); return lines; }
+// balanced: the narrowest width that still needs the same number of lines, so no line is left with a lone word
+function balanced(words, size) { const n = wrap(words, size, BODY.w).length; if (n < 2) return wrap(words, size, BODY.w); let lo = BODY.w * .4, hi = BODY.w;
+  for (let k = 0; k < 14; k++) { const mid = (lo + hi) / 2; if (wrap(words, size, mid).length > n) lo = mid; else hi = mid; } return wrap(words, size, hi); }
 function layoutAyah(textStr, marker, big = false) {
-  const words = (textStr + (marker ? ' ' + marker : '')).split(' ');
-  for (let size = big ? 70 : 60; size >= 40; size -= 2) { const lh = size * 1.9, lines = wrap(words, size, BODY.w); if (lines.length * lh <= BODY.h) return [{ size, lh, lines }]; }
+  const words = textStr.split(' '); if (marker) words[words.length - 1] += '\u00A0' + marker;   // the ayah number never sits alone on a line
+  for (let size = big ? 70 : 60; size >= 40; size -= 2) { const lh = size * 1.9, lines = balanced(words, size); if (lines.length * lh <= BODY.h) return [{ size, lh, lines }]; }
   // still too long at 40 px: pages of whole lines
   const size = 40, lh = size * 1.9, lines = wrap(words, size, BODY.w), per = Math.floor(BODY.h / lh), pages = [];
   for (let i = 0; i < lines.length; i += per) pages.push({ size, lh, lines: lines.slice(i, i + per) }); return pages;
